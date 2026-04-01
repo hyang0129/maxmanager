@@ -6,7 +6,6 @@ interface and mock all dependencies so each test covers exactly one function.
 """
 
 import json
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -120,44 +119,46 @@ class TestProbeUsage:
         from maxmanager.core import probe_usage
 
         profile = _make_profile("acct-alice", tmp_path)
-        fake_output = json.dumps({"usage_7d_pct": 62.5, "usage_5hr_pct": 44.1})
 
-        mock_result = MagicMock()
-        mock_result.stdout = fake_output
+        mock_usage = MagicMock()
+        mock_usage.five_hour_pct = 44.1
+        mock_usage.seven_day_pct = 62.5
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            snapshot = probe_usage(profile)
+        with patch("maxmanager.core.get_usage", create=True) as mock_get:
+            # Patch the import inside probe_usage
+            with patch.dict("sys.modules", {"claude_usage": MagicMock(get_usage=MagicMock(return_value=mock_usage))}):
+                snapshot = probe_usage(profile)
 
-        mock_run.assert_called_once()
         assert snapshot.profile_name == "acct-alice"
         assert snapshot.usage_7d == pytest.approx(62.5)
         assert snapshot.usage_5hr == pytest.approx(44.1)
 
-    def test_probe_usage_subprocess_fails(self, tmp_path):
+    def test_probe_usage_failure_returns_none(self, tmp_path):
         from maxmanager.core import probe_usage
 
         profile = _make_profile("acct-alice", tmp_path)
 
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, "cmd"),
-        ):
+        with patch.dict("sys.modules", {"claude_usage": MagicMock(get_usage=MagicMock(side_effect=RuntimeError("probe failed")))}):
             snapshot = probe_usage(profile)
 
         assert snapshot.profile_name == "acct-alice"
         assert snapshot.usage_7d is None
         assert snapshot.usage_5hr is None
 
-    def test_probe_usage_timeout(self, tmp_path):
+    def test_probe_usage_import_error(self, tmp_path):
         from maxmanager.core import probe_usage
 
         profile = _make_profile("acct-alice", tmp_path)
 
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired("cmd", 30),
-        ):
-            snapshot = probe_usage(profile)
+        # Simulate claude_usage not installed
+        import sys
+        saved = sys.modules.pop("claude_usage", None)
+        try:
+            with patch.dict("sys.modules", {"claude_usage": None}):
+                snapshot = probe_usage(profile)
+        finally:
+            if saved is not None:
+                sys.modules["claude_usage"] = saved
 
         assert snapshot.profile_name == "acct-alice"
         assert snapshot.usage_7d is None

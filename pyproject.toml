@@ -6,6 +6,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "loguru",
+    "claude-usage-plz>=0.1.0",
 ]
 
 [project.optional-dependencies]

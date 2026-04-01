@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import glob
 import hashlib
 import json
-import os
-import re
 import shutil
 import socket
-import subprocess
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
 from pathlib import Path
 
 from loguru import logger
@@ -27,85 +22,6 @@ from .constants import (
     STATE_FILE,
 )
 from .models import Profile, SwitchState, Trigger, UsageSnapshot
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-@lru_cache(maxsize=1)
-def _find_claude_cli() -> str:
-    """Find the claude CLI binary, checking PATH then VS Code extension glob."""
-    if shutil.which("claude"):
-        return "claude"
-
-    patterns = [
-        os.path.expanduser(
-            "~/.vscode-server/extensions/anthropic.claude-code-*/resources/native-binary/claude"
-        ),
-        os.path.expanduser(
-            "~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude"
-        ),
-    ]
-    for pattern in patterns:
-        matches = sorted(glob.glob(pattern))
-        if matches:
-            path = matches[-1]  # latest version
-            logger.info(f"Found claude CLI via glob: {path}")
-            return path
-
-    raise FileNotFoundError("claude CLI not found in PATH or VS Code extensions")
-
-
-def _parse_usage_output(output: str) -> tuple[float | None, float | None]:
-    """Parse CLI output for usage_5hr and usage_7d percentages.
-
-    Returns (usage_5hr, usage_7d) as percentages 0-100, or (None, None) if
-    unparseable.  Tries JSON first, then falls back to regex patterns.
-    """
-    # Handle --output-format json wrapper: extract the "result" text
-    try:
-        wrapper = json.loads(output.strip())
-        if "result" in wrapper:
-            output = wrapper["result"]
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # Strip markdown code fences (```json ... ```)
-    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", output, re.DOTALL)
-    if fence_match:
-        output = fence_match.group(1)
-
-    # Try JSON (the inner response may itself be JSON)
-    try:
-        data = json.loads(output.strip())
-        return float(data["usage_5hr_pct"]), float(data["usage_7d_pct"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        pass
-
-    # Fallback: regex for patterns like "5hr: 45%" or "7-day: 72%"
-    usage_5hr: float | None = None
-    usage_7d: float | None = None
-
-    m5 = re.search(r"5[-\s]?hr[^\d]*?([\d.]+)\s*%", output, re.IGNORECASE)
-    if m5:
-        try:
-            usage_5hr = float(m5.group(1))
-        except ValueError:
-            pass
-
-    m7 = re.search(r"7[-\s]?day[^\d]*?([\d.]+)\s*%", output, re.IGNORECASE)
-    if m7:
-        try:
-            usage_7d = float(m7.group(1))
-        except ValueError:
-            pass
-
-    if usage_5hr is not None or usage_7d is not None:
-        return usage_5hr, usage_7d
-
-    return None, None
 
 
 def _is_cli_active() -> bool:
@@ -200,46 +116,22 @@ def discover_profiles(profiles_dir: Path = PROFILES_DIR) -> list[Profile]:
 
 
 def probe_usage(profile: Profile) -> UsageSnapshot:
-    """Invoke the claude CLI to query usage for *profile*.
+    """Query usage for *profile* via ``claude-usage-plz``.
 
-    Returns a :class:`UsageSnapshot`.  On any subprocess failure the snapshot
-    has ``usage_7d=None`` and ``usage_5hr=None``.
+    Returns a :class:`UsageSnapshot`.  On any failure the snapshot has
+    ``usage_7d=None`` and ``usage_5hr=None``.
     """
-    prompt = (
-        "What are my current usage stats? "
-        "Reply with ONLY a JSON object with keys "
-        '"usage_5hr_pct" (0-100 float) and "usage_7d_pct" (0-100 float). '
-        "No other text."
-    )
-    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(profile.claude_dir)}
-    claude_bin = _find_claude_cli()
-    cmd = [claude_bin, "--print", "--output-format", "json", prompt]
-
     try:
-        result = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        result.check_returncode()
-        usage_5hr, usage_7d = _parse_usage_output(result.stdout)
+        from claude_usage import get_usage
+
+        usage = get_usage(claude_dir=str(profile.claude_dir))
         return UsageSnapshot(
             profile_name=profile.name,
-            usage_7d=usage_7d,
-            usage_5hr=usage_5hr,
+            usage_5hr=usage.five_hour_pct,
+            usage_7d=usage.seven_day_pct,
         )
-    except subprocess.TimeoutExpired as exc:
-        logger.warning(f"probe_usage: timeout for profile '{profile.name}': {exc}")
-    except subprocess.CalledProcessError as exc:
-        logger.warning(
-            f"probe_usage: CLI error for profile '{profile.name}': {exc}"
-        )
-    except FileNotFoundError as exc:
-        logger.warning(
-            f"probe_usage: claude CLI not found for profile '{profile.name}': {exc}"
-        )
+    except Exception as exc:
+        logger.warning(f"probe_usage: failed for profile '{profile.name}': {exc}")
 
     return UsageSnapshot(
         profile_name=profile.name,
