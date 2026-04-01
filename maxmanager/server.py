@@ -8,17 +8,23 @@ from maxmanager.constants import LOOP_INTERVAL_SECONDS, LOOP_JITTER_SECONDS
 from maxmanager.core import choose_credential, read_state
 
 _loop_task: asyncio.Task | None = None
+_lock = asyncio.Lock()
 
 
 async def credential_loop() -> None:
     logger.info("Startup: running initial credential selection (guards bypassed)")
-    await asyncio.to_thread(choose_credential, True)
+    try:
+        async with _lock:
+            await asyncio.to_thread(choose_credential, True)
+    except Exception:
+        logger.exception("Startup choose_credential failed; will retry in loop")
     while True:
-        sleep_for = LOOP_INTERVAL_SECONDS + random.uniform(-LOOP_JITTER_SECONDS, LOOP_JITTER_SECONDS)
+        sleep_for = max(60, LOOP_INTERVAL_SECONDS + random.uniform(-LOOP_JITTER_SECONDS, LOOP_JITTER_SECONDS))
         logger.debug(f"Loop sleeping for {sleep_for:.0f}s")
         await asyncio.sleep(sleep_for)
         try:
-            await asyncio.to_thread(choose_credential, False)
+            async with _lock:
+                await asyncio.to_thread(choose_credential, False)
         except Exception:
             logger.exception("choose_credential failed; will retry next cycle")
 
@@ -53,5 +59,6 @@ async def status():
 @app.post("/trigger")
 async def trigger():
     logger.info("Manual trigger: POST /trigger called")
-    result = choose_credential(False)
+    async with _lock:
+        result = await asyncio.to_thread(choose_credential, False)
     return result

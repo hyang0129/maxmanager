@@ -81,14 +81,13 @@ def _is_cli_active() -> bool:
         for proc in psutil.process_iter(["name", "connections"]):
             try:
                 if "claude" in (proc.info["name"] or "").lower():
-                    return True
-                for conn in proc.info.get("connections") or []:
-                    if (
-                        conn.raddr
-                        and conn.raddr.port == 443
-                        and conn.status == "ESTABLISHED"
-                    ):
-                        return True
+                    for conn in proc.info.get("connections") or []:
+                        if (
+                            conn.raddr
+                            and conn.raddr.port == 443
+                            and conn.status == "ESTABLISHED"
+                        ):
+                            return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         return False
@@ -440,6 +439,11 @@ def choose_credential(startup: bool) -> dict:
             "active": current_profile.name,
             "trigger": trigger.kind if trigger else None,
         }
+
+    if trigger is None:
+        activate_credential(current_profile)
+        write_state(current_profile, None, all_snapshots)
+        return {"action": "activated_current", "active": current_profile.name}
 
     # Activate the target profile
     target_profile = next(p for p in profiles if p.name == trigger.target)

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -18,7 +18,7 @@ class UsageSnapshot:
     profile_name: str
     usage_7d: float | None      # 0.0–100.0, None if probe failed
     usage_5hr: float | None     # 0.0–100.0, None if probe failed
-    probed_at: datetime = field(default_factory=datetime.utcnow)
+    probed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     reset_at_5hr: datetime | None = None  # when the 5hr window resets, if known
 
 
