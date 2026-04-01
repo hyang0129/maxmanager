@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import socket
 import subprocess
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from loguru import logger
@@ -32,13 +34,50 @@ from .models import Profile, SwitchState, Trigger, UsageSnapshot
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=1)
+def _find_claude_cli() -> str:
+    """Find the claude CLI binary, checking PATH then VS Code extension glob."""
+    if shutil.which("claude"):
+        return "claude"
+
+    patterns = [
+        os.path.expanduser(
+            "~/.vscode-server/extensions/anthropic.claude-code-*/resources/native-binary/claude"
+        ),
+        os.path.expanduser(
+            "~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude"
+        ),
+    ]
+    for pattern in patterns:
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            path = matches[-1]  # latest version
+            logger.info(f"Found claude CLI via glob: {path}")
+            return path
+
+    raise FileNotFoundError("claude CLI not found in PATH or VS Code extensions")
+
+
 def _parse_usage_output(output: str) -> tuple[float | None, float | None]:
     """Parse CLI output for usage_5hr and usage_7d percentages.
 
     Returns (usage_5hr, usage_7d) as percentages 0-100, or (None, None) if
     unparseable.  Tries JSON first, then falls back to regex patterns.
     """
-    # Try JSON first
+    # Handle --output-format json wrapper: extract the "result" text
+    try:
+        wrapper = json.loads(output.strip())
+        if "result" in wrapper:
+            output = wrapper["result"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Strip markdown code fences (```json ... ```)
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", output, re.DOTALL)
+    if fence_match:
+        output = fence_match.group(1)
+
+    # Try JSON (the inner response may itself be JSON)
     try:
         data = json.loads(output.strip())
         return float(data["usage_5hr_pct"]), float(data["usage_7d_pct"])
@@ -173,7 +212,8 @@ def probe_usage(profile: Profile) -> UsageSnapshot:
         "No other text."
     )
     env = {**os.environ, "CLAUDE_CONFIG_DIR": str(profile.claude_dir)}
-    cmd = ["claude", "--print", "--no-stream", prompt]
+    claude_bin = _find_claude_cli()
+    cmd = [claude_bin, "--print", "--output-format", "json", prompt]
 
     try:
         result = subprocess.run(
