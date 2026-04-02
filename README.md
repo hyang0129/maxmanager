@@ -60,6 +60,7 @@ The CLI reads credentials once at process startup and holds tokens in memory. Ov
 - Windows host with WSL2 + Docker Desktop
 - Two or more Claude Max subscriptions (separate accounts)
 - Dev containers with read-write bind mount to `~/.claude-profiles/`
+- **Claude CLI installed via npm** (`npm install -g @anthropic-ai/claude-code`) — the VS Code extension binary is not sufficient; `claude-usage-plz` (used for usage probing) requires the npm-installed CLI
 
 ## Status
 
